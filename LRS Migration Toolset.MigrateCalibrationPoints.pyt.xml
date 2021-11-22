@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<metadata xml:lang="en"><Esri><CreaDate>20211111</CreaDate><CreaTime>08590800</CreaTime><ArcGISFormat>1.0</ArcGISFormat><SyncOnce>TRUE</SyncOnce><ModDate>20211112</ModDate><ModTime>16065700</ModTime><scaleRange><minScale>150000000</minScale><maxScale>5000</maxScale></scaleRange><ArcGISProfile>ItemDescription</ArcGISProfile></Esri><tool name="MigrateCalibrationPoints" displayname="Migrate Calibration Points" toolboxalias="LRSMigrationToolset" xmlns=""><arcToolboxHelpPath>c:\arcgis\Resources\Help\gp</arcToolboxHelpPath><parameters><param name="in_network_features" displayname="Network Feature Class" type="Required" direction="Input" datatype="Feature Class" expression="in_network_features"><dialogReference>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;The LRS Network feature class for which the measure values need to be generated or updated in the calibration points feature class.&lt;/SPAN&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</dialogReference><pythonReference>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Input LRS Network feature class&lt;/SPAN&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</pythonReference></param><param name="in_calibration_point_features" displayname="Calibration Point Feature Class" type="Required" direction="Input" datatype="Feature Class" expression="in_calibration_point_features"><dialogReference>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;The calibration point feature class in which new features will be added or updated.&lt;/SPAN&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</dialogReference><pythonReference>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Input LRS Calibration Point feature class&lt;/SPAN&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</pythonReference></param></parameters><summary>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P STYLE="margin:0 0 11 0;"&gt;&lt;SPAN STYLE="font-size:12pt"&gt;This script creates and updates calibration points to meet the minimum requirments to maintian calibrated routes in ArcGIS Pro. &lt;/SPAN&gt;&lt;/P&gt;&lt;UL&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Creates the minimum number of calibration points that are required to keep routes calibrated.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Updates the Z values on calibration points to match Z values that are on the route.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;/UL&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</summary><usage>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;UL&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Network feature class is used as the source location referencing method for calculating the measure values to update the calibration point feature class.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Routes that contain looped section require a minimum of two calibration points within the loop (excluding loop endpoints). Calibration points will be added to each loop to meet this condition.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;For calibration points to be considered during calibration, X, Y and Z values need to be within tolerance of the route. X and Y values will not be altered but Z values will be updated to match the route.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Added calibrations points will not change the calibration of the route.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;LI&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;Added calibrations points will not result in changes to event behaviors.&lt;/SPAN&gt;&lt;/P&gt;&lt;/LI&gt;&lt;/UL&gt;&lt;P&gt;&lt;SPAN /&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</usage><scriptExamples><scriptExample><title>UpdateCalibrationPoints example 1 (Python window)</title><para>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;The following Python window script demonstrates how to use the UpdateCalibrationPoints function in immediate mode.&lt;/SPAN&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</para><code>
+          # tool variables
+          in_network_features="network"
+          in_calibration_point_features="Calibration_Point"
+          toolset="C:/Data/LRSCustomToolset.pyt"
+
+          # set current workspace
+          arcpy.env.workspace="C:/Data/SampleData.gdb"
+
+          # import toolbox
+          arcpy.ImportToolBox("toolset")
+
+          # execute the tool
+          arcpy.LRSToolset.UpdateCalibrationPoints("in_network_features", "in_calibration_point_features")
+        </code></scriptExample></scriptExamples><scriptExamples><scriptExample><title>UpdateCalibrationPoints example 2 (stand-alone script)</title><para>&lt;DIV STYLE="text-align:Left;"&gt;&lt;DIV&gt;&lt;DIV&gt;&lt;P&gt;&lt;SPAN STYLE="font-size:12pt"&gt;The following stand-alone script demonstrates how to use the UpdateCalibrationPoints function in stand-alone mode.&lt;/SPAN&gt;&lt;/P&gt;&lt;/DIV&gt;&lt;/DIV&gt;&lt;/DIV&gt;</para><code>
+          # Import arcpy module
+          import arcpy
+
+          in_network_features="network"
+          in_calibration_point_features="Calibration_Point"
+          toolset="C:/Data/LRSCustomToolset.pyt"
+
+          # set current workspace
+          arcpy.env.workspace="C:/Data/SampleData.gdb"
+
+          # import toolbox
+          arcpy.ImportToolBox("toolset")
+
+          # execute the tool
+          arcpy.LRSToolset.UpdateCalibrationPoints("in_network_features", "in_calibration_point_features")
+        </code></scriptExample></scriptExamples></tool><dataIdInfo><idCitation><resTitle>Migrate Calibration Points</resTitle></idCitation><searchKeys><keyword>Location Referencing</keyword><keyword>LRS</keyword><keyword>Migration</keyword></searchKeys></dataIdInfo><distInfo><distributor><distorFormat><formatName>ArcToolbox Tool</formatName></distorFormat></distributor></distInfo><mdHrLv><ScopeCd value="005"/></mdHrLv><mdDateSt Sync="TRUE">20211112</mdDateSt></metadata>
