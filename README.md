@@ -26,8 +26,6 @@ Please refer to the LRS migration whitepaper document for specific information o
 ## Resources
 
 * [Roads and Highways product documentation](https://pro.arcgis.com/en/pro-app/latest/help/production/roads-highways/)
-* [ArcGIS Blog](http://blogs.esri.com/esri/arcgis/)
-* [twitter@esri](http://twitter.com/esri)
 
 ## Issues
 
