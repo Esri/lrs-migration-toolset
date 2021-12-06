@@ -23,6 +23,7 @@ import os
 import arcpy
 import xml.etree.ElementTree as ET
 
+
 class FixIntersectionsAsReferentsInLRSEvents(object):
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
@@ -83,7 +84,7 @@ class FixIntersectionsAsReferentsInLRSEvents(object):
         eventFCDict.clear()
 
         # Populate the events dictionary based on multivalue events parameter
-        eventFC = parameters[2].valueAsText
+        eventFC = parameters[2].valueAsText.replace("\'", "")
         eventFCList = eventFC.split(";")
         PopulateEventsDict(eventFCList)
 
@@ -195,9 +196,10 @@ def ValidateParameters(parameters):
 
     #region Event Validation
     if parameters[2].valueAsText: 
-        eventFC = parameters[2].valueAsText
+        eventFC = parameters[2].valueAsText.replace("\'", "")
         #eventFCName = eventFC.split("\\")[-1];
-        eventFCList = eventFC.split(";")
+        eventFCList = eventFC.split(';')
+
         # Check if Event is in LRS Dataset.
         for eventFC in eventFCList:
             #Ensure the parameter is a Feature Class
@@ -286,7 +288,7 @@ def SetCodedValueDomains(parameters):
 
     oldIntersectionFC = parameters[0].valueAsText
     newIntersectionFC = parameters[1].valueAsText
-    eventFC = parameters[2].valueAsText
+    eventFC = parameters[2].valueAsText.replace("\'", "")
     eventFCList = eventFC.split(";")
 
     old_intersection_name = os.path.basename(oldIntersectionFC)
