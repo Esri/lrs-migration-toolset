@@ -913,7 +913,7 @@ def GetNetworkFromMetadata(lrsMetadata, inputFeature, validate = False, paramete
     # Find input Network in LRS.
     for networks in rootNetworks:
         for network in networks:
-            name = network.attrib['Name']
+            name = network.attrib['PersistedFeatureClassName']
             if name == inputName:
                 return network
 
