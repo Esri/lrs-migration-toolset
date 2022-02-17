@@ -14,7 +14,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 See the License for the specific language governing permissions and
 limitations under the License.
-''' 
+'''
 
 # -*- coding: utf-8 -*-
 import arcpy, uuid, os, logging
@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 import math, datetime
 from arcpy import env
 from typing import NamedTuple
+
 
 class MigrateCalibrationPoints(object):
     def __init__(self):
@@ -52,7 +53,7 @@ class MigrateCalibrationPoints(object):
             datatype="DEFeatureClass",
             parameterType="Required",
             direction="Input")
-         
+
         param1.filter.list = ["Point"]
         params.append(param1)
 
@@ -83,7 +84,7 @@ class MigrateCalibrationPoints(object):
     def updateMessages(self, parameters):
         """Modify the messages created by internal validation for each tool
         parameter.  This method is called after internal validation."""
-        
+
         # Get Parameter info.
         inputNetworkName = parameters[0].valueAsText
         inputNetworkValue = parameters[0].value
@@ -115,7 +116,8 @@ class MigrateCalibrationPoints(object):
             if lrsMetadata is None:
                 return
 
-            calibrationPoint = GetCalibrationPointFromMetadata(lrsMetadata, inputCalibrationPointName, True, parameters[1])
+            calibrationPoint = GetCalibrationPointFromMetadata(lrsMetadata, inputCalibrationPointName, True,
+                                                               parameters[1])
             if calibrationPoint is None:
                 return
 
@@ -138,7 +140,8 @@ class MigrateCalibrationPoints(object):
             calibrationPointLRSName = root.attrib['Name']
 
             if (NetworkLRSName != calibrationPointLRSName):
-                parameters[0].setErrorMessage("Input Network and Calibration Point features are not registered with same LRS")
+                parameters[0].setErrorMessage(
+                    "Input Network and Calibration Point features are not registered with same LRS")
                 return
 
         return
@@ -167,36 +170,42 @@ class MigrateCalibrationPoints(object):
         # Start edit session.
         edit = StartEditSession(workspace)
 
-        # Get only routes that contain loops.
-        routesWithLoops = GetRoutesWithLoops(networkPath, networkField, tolerances)
+        nanOids = CheckForNans(networkPath, networkField)
 
         editedRouteOids = []
         editedCpOids = []
 
-        # If loops are present.
-        if routesWithLoops:
+        if nanOids.count == 0:
+            # Get only routes that contain loops.
+            routesWithLoops = GetRoutesWithLoops(networkPath, networkField, tolerances)
 
-            # Check if loops have existing intermediate cps.
-            intermediateCpsInLoops = GetExistingIntermediateCps(calibrationPointPath, calibrationPointFields, tolerances, routesWithLoops)
+            # If loops are present.
+            if routesWithLoops:
+                # Check if loops have existing intermediate cps.
+                intermediateCpsInLoops = GetExistingIntermediateCps(calibrationPointPath, calibrationPointFields,
+                                                                    tolerances, routesWithLoops)
 
-            # Find new cps that need to be added.
-            cpRecordsToAdd = GetCpRecordsToAdd(calibrationPointPath, tolerances, routesWithLoops, intermediateCpsInLoops)
+                # Find new cps that need to be added.
+                cpRecordsToAdd = GetCpRecordsToAdd(calibrationPointPath, tolerances, routesWithLoops,
+                                                   intermediateCpsInLoops)
 
-            # Write new records to Calibration Point Feature class.
-            editedRouteOids = WriteToFeature(calibrationPointPath, calibrationPointFields, workspace, cpRecordsToAdd)
+                # Write new records to Calibration Point Feature class.
+                editedRouteOids = WriteToFeature(calibrationPointPath, calibrationPointFields, workspace,
+                                                 cpRecordsToAdd)
 
-        # Check for cps with incorrect Z values.
-        editedCps = GetAdjustZValuesForCalibrationPoints(networkPath, networkField, calibrationPointPath, calibrationPointFields, tolerances)
+            # Check for cps with incorrect Z values.
+            editedCps = GetAdjustZValuesForCalibrationPoints(networkPath, networkField, calibrationPointPath,
+                                                             calibrationPointFields, tolerances)
 
-        # Update calibration point if needed.
-        if editedCps:
-            editedCpOids = UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace)
-        
+            # Update calibration point if needed.
+            if editedCps:
+                editedCpOids = UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace)
+
         # Stop edit session.
         StopEditSession(edit)
 
-        # Write to output log file if any new cps were added/updated.                
-        WriteLogFile(editedRouteOids, editedCpOids)
+        # Write to output log file if any new cps were added/updated.
+        WriteLogFile(editedRouteOids, editedCpOids, nanOids)
 
         return
 
@@ -205,19 +214,54 @@ class MigrateCalibrationPoints(object):
 ##      Looped Routes Functions             ##
 ##******************************************##
 
+def CheckForNans(networkFC, fields, ):
+    # Set progressor bar and label.
+    featureCount = int(arcpy.GetCount_management(networkFC)[0])
+    arcpy.SetProgressor("step", "Validating Routes...",
+                        0, featureCount, 1)
+
+    nanOids = []
+    for row in arcpy.da.SearchCursor(networkFC, ["OID@", fields.RouteId, fields.FromDate, fields.ToDate, "SHAPE@"]):
+
+        # Store row in tuple for readability.
+        rowValues = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=0, ToM=0, Network=0,
+                              Geometry=row[4])
+
+        # Skip null geometry
+        if rowValues.Geometry is None:
+            arcpy.SetProgressorPosition()
+            continue
+
+        nanFound = False
+        pointIndex = []
+        for part in rowValues.Geometry:
+            if nanFound == True:
+                break
+
+            for point in part:
+                if (math.isnan(point.M)):
+                    nanOids.append(row[0])
+                    nanFound = True
+                    break
+
+        arcpy.SetProgressorPosition()
+
+    return nanOids
+
+
 def GetRoutesWithLoops(networkFC, fields, tolerances):
-    
     # Set progressor bar and label.
     featureCount = int(arcpy.GetCount_management(networkFC)[0])
     arcpy.SetProgressor("step", "Finding Routes with Loops...",
-                    0, featureCount, 1)
+                        0, featureCount, 1)
 
     # Iterate all routes in Network.
     routeInfo = {}
     for row in arcpy.da.SearchCursor(networkFC, ["OID@", fields.RouteId, fields.FromDate, fields.ToDate, "SHAPE@"]):
-        
+
         # Store row in tuple for readability.
-        rowValues = RouteInfo(Oid = row[0], RouteId = row[1], FromDate = row[2], ToDate = row[3], FromM = 0, ToM = 0, Network = 0, Geometry = row[4])
+        rowValues = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=0, ToM=0, Network=0,
+                              Geometry=row[4])
 
         # Skip null geometry
         if rowValues.Geometry is None:
@@ -241,18 +285,20 @@ def GetRoutesWithLoops(networkFC, fields, tolerances):
                     # X, Y, Z location but different M values.
                     for index in pointIndex:
 
-                        if (not math.isnan(index[3]) and 
-                            not math.isnan(point.M) and
-                            not math.isclose(index[3], point.M, rel_tol = tolerances.MTolerance, abs_tol = tolerances.MTolerance) and
-                            math.isclose(index[0], point.X, abs_tol = tolerances.XYTolerance) and 
-                            math.isclose(index[1], point.Y, abs_tol = tolerances.XYTolerance) and 
-                            math.isclose(index[2], point.Z, abs_tol = tolerances.ZTolerance)):
+                        if (not math.isnan(index[3]) and
+                                not math.isnan(point.M) and
+                                not math.isclose(index[3], point.M, rel_tol=tolerances.MTolerance,
+                                                 abs_tol=tolerances.MTolerance) and
+                                math.isclose(index[0], point.X, abs_tol=tolerances.XYTolerance) and
+                                math.isclose(index[1], point.Y, abs_tol=tolerances.XYTolerance) and
+                                math.isclose(index[2], point.Z, abs_tol=tolerances.ZTolerance)):
 
                             alreadyFound = False
 
                             # Found duplicate vertex. Store info with the start/end measure of the loop.
-                            info = RouteInfo(rowValues.Oid, rowValues.RouteId, rowValues.FromDate, rowValues.ToDate, index[3], point.M, fields.NetworkId, rowValues.Geometry)
-                            
+                            info = RouteInfo(rowValues.Oid, rowValues.RouteId, rowValues.FromDate, rowValues.ToDate,
+                                             index[3], point.M, fields.NetworkId, rowValues.Geometry)
+
                             if rowValues.RouteId not in routeInfo:
                                 routeInfo[rowValues.RouteId] = []
                             else:
@@ -262,21 +308,19 @@ def GetRoutesWithLoops(networkFC, fields, tolerances):
                                     value = RouteInfo(**route)
 
                                     if (info.RouteId == value.RouteId and
-                                        info.FromDate == value.FromDate and
-                                        info.ToDate == value.ToDate and
-                                        info.FromM == value.FromM and
-                                        info.ToM == value.ToM):
+                                            info.FromDate == value.FromDate and
+                                            info.ToDate == value.ToDate and
+                                            info.FromM == value.FromM and
+                                            info.ToM == value.ToM):
                                         alreadyFound = True
 
                             if not alreadyFound:
-
                                 # Loop detected.
                                 routeInfo[rowValues.RouteId].append(info._asdict())
                                 loopFound = True
                                 break
 
                     if not loopFound:
-
                         # No matching vertices's.
                         pointIndex.append((point.X, point.Y, point.Z, point.M))
 
@@ -286,7 +330,6 @@ def GetRoutesWithLoops(networkFC, fields, tolerances):
 
 
 def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRoutes):
-
     # Set progressor label.
     arcpy.SetProgressorLabel("Finding existing intermediate cps...")
 
@@ -297,10 +340,13 @@ def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRou
 
     # Search for calibration points for looped routes.
     existingLoopCps = {}
-    for row in arcpy.da.SearchCursor(calibrationPointFC, [ fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure, "SHAPE@"], where_clause=whereclause):
+    for row in arcpy.da.SearchCursor(calibrationPointFC,
+                                     [fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure, "SHAPE@"],
+                                     where_clause=whereclause):
 
         # Store row in tuple for readability.
-        rowValues = RouteInfo( Oid = 0, RouteId = row[0], FromDate = row[1], ToDate = row[2], FromM = row[3], ToM = row[3], Network = 0, Geometry = row[4])
+        rowValues = RouteInfo(Oid=0, RouteId=row[0], FromDate=row[1], ToDate=row[2], FromM=row[3], ToM=row[3],
+                              Network=0, Geometry=row[4])
 
         for value in loopedRoutes[rowValues.RouteId]:
             routeInfo = RouteInfo(**value)
@@ -308,21 +354,24 @@ def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRou
             # Check if calibration point is within time span of route and
             # if its measure is between the start and end of the loop.
             if (Intersects(rowValues.FromDate, routeInfo.FromDate, rowValues.ToDate, routeInfo.ToDate) and
-                not math.isclose(rowValues.FromM, routeInfo.FromM, rel_tol = tolerances.MTolerance, abs_tol = tolerances.MTolerance) and
-                not math.isclose(rowValues.FromM, routeInfo.ToM, rel_tol = tolerances.MTolerance, abs_tol = tolerances.MTolerance) and
-                rowValues.FromM > routeInfo.FromM and rowValues.FromM < routeInfo.ToM):
-                        
-                    # Found intermediate cp.
-                    if routeInfo.Oid not in existingLoopCps:
-                        existingLoopCps[routeInfo.Oid] = []
+                    not math.isclose(rowValues.FromM, routeInfo.FromM, rel_tol=tolerances.MTolerance,
+                                     abs_tol=tolerances.MTolerance) and
+                    not math.isclose(rowValues.FromM, routeInfo.ToM, rel_tol=tolerances.MTolerance,
+                                     abs_tol=tolerances.MTolerance) and
+                    rowValues.FromM > routeInfo.FromM and rowValues.FromM < routeInfo.ToM):
 
-                    existingLoopCps[routeInfo.Oid].append(RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, rowValues.FromM, rowValues.FromM, routeInfo.Network, rowValues.Geometry))
+                # Found intermediate cp.
+                if routeInfo.Oid not in existingLoopCps:
+                    existingLoopCps[routeInfo.Oid] = []
+
+                existingLoopCps[routeInfo.Oid].append(
+                    RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, rowValues.FromM,
+                              rowValues.FromM, routeInfo.Network, rowValues.Geometry))
 
     return existingLoopCps
 
 
 def GetCpRecordsToAdd(calibrationPointFC, tolerances, loopedRoutes, cpsInLoops):
-    
     # Set progressor label.
     arcpy.SetProgressorLabel("Creating intermediate loop cps...")
 
@@ -358,22 +407,29 @@ def GetCpRecordsToAdd(calibrationPointFC, tolerances, loopedRoutes, cpsInLoops):
                     # Add to the first half of the loop.
                     else:
                         newvalue = (existingMeasure + routeInfo.FromM) / 2
-                        newPoint = GetPoint(routeInfo,  newvalue, tolerances)
+                        newPoint = GetPoint(routeInfo, newvalue, tolerances)
 
-                    newRecords.append( RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, newvalue, newvalue, routeInfo.Network, newPoint))
+                    newRecords.append(
+                        RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, newvalue,
+                                  newvalue, routeInfo.Network, newPoint))
 
             # No intermediate cps in loop. Add 2 cps.
             elif len(existingCps) == 0:
 
                 onethird = ((routeInfo.ToM - routeInfo.FromM) / 3) + routeInfo.FromM
-                twothrid = ((routeInfo.ToM - routeInfo.FromM) / 3) + ((routeInfo.ToM - routeInfo.FromM) / 3) + routeInfo.FromM
+                twothrid = ((routeInfo.ToM - routeInfo.FromM) / 3) + (
+                            (routeInfo.ToM - routeInfo.FromM) / 3) + routeInfo.FromM
 
                 newPoint1 = GetPoint(routeInfo, onethird, tolerances)
                 newPoint2 = GetPoint(routeInfo, twothrid, tolerances)
 
-                newRecords.append( RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, onethird, onethird, routeInfo.Network, newPoint1))
-                newRecords.append( RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, twothrid, twothrid, routeInfo.Network, newPoint2))
-        
+                newRecords.append(
+                    RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, onethird,
+                              onethird, routeInfo.Network, newPoint1))
+                newRecords.append(
+                    RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, twothrid,
+                              twothrid, routeInfo.Network, newPoint2))
+
         # No need simplify for timeslices.
         if len(newRecords) == 1:
             recordsToAdd.append(newRecords[0])
@@ -389,7 +445,6 @@ def GetCpRecordsToAdd(calibrationPointFC, tolerances, loopedRoutes, cpsInLoops):
 
 
 def AdjustForTimeslices(records, tolerances):
-    
     # Sorter
     def sortFunc(e):
         return e[2]
@@ -403,42 +458,43 @@ def AdjustForTimeslices(records, tolerances):
         tempi = records[i]
 
         if tempi.Oid != -1:
-          
+
             for j in range(i + 1, len(records)):
                 tempj = records[j]
 
                 if tempj.Oid != -1:
 
                     # Check for records at same location with same measure.
-                    if (math.isclose(tempi.FromM, tempj.FromM, rel_tol = tolerances.MTolerance, abs_tol = tolerances.MTolerance) and
-                        math.isclose(tempi.Geometry.X, tempj.Geometry.X, abs_tol = tolerances.XYTolerance) and 
-                        math.isclose(tempi.Geometry.Y, tempj.Geometry.Y, abs_tol = tolerances.XYTolerance) and 
-                        math.isclose(tempi.Geometry.Z, tempj.Geometry.Z, abs_tol = tolerances.ZTolerance)):
+                    if (math.isclose(tempi.FromM, tempj.FromM, rel_tol=tolerances.MTolerance,
+                                     abs_tol=tolerances.MTolerance) and
+                            math.isclose(tempi.Geometry.X, tempj.Geometry.X, abs_tol=tolerances.XYTolerance) and
+                            math.isclose(tempi.Geometry.Y, tempj.Geometry.Y, abs_tol=tolerances.XYTolerance) and
+                            math.isclose(tempi.Geometry.Z, tempj.Geometry.Z, abs_tol=tolerances.ZTolerance)):
 
-                        # Check if we can merge records based on there time span. Since the 
+                        # Check if we can merge records based on there time span. Since the
                         # records are sorted by from date, a single pass should do.
-                    
+
                         # Duplicate record. Invalidate record j.
                         if (CompareDate(tempi.FromDate, tempj.FromDate, False, False) and
-                            CompareDate(tempi.ToDate, tempj.ToDate, False, False)):
-                            records[j] = records[j]._replace(Oid = -1)
+                                CompareDate(tempi.ToDate, tempj.ToDate, False, False)):
+                            records[j] = records[j]._replace(Oid=-1)
 
                         # Shouldn't happen due to sort, but just in case.
                         # ex: tempj == (1/1/2000 - 1/1/2010) tempi == (1/1/2010 - null).
                         # tempj.FromDate < tempi.FromDate and tempj.ToDate == tempi.FromDate.
                         # tempi new dates will be (1/1/2000 - null).
                         if (CompareDate(tempj.FromDate, tempi.FromDate, True, False) and
-                            CompareDate(tempj.ToDate, tempi.FromDate, False, False)):
-                            records[i] = records[i]._replace(FromDate = tempj.FromDate)
-                            records[j] = records[j]._replace(Oid = -1)
+                                CompareDate(tempj.ToDate, tempi.FromDate, False, False)):
+                            records[i] = records[i]._replace(FromDate=tempj.FromDate)
+                            records[j] = records[j]._replace(Oid=-1)
 
                         # ex: tempj == (1/1/2010 - null) tempi == (1/1/2000 - 1/1/2010).
                         # tempj.ToDate > tempi.FromDate and tempj.FromDate == tempi.ToDate.
                         # tempi new dates will be (1/1/2000 - null).
-                        if (CompareDate(tempj.ToDate, tempi.ToDate, False, True) and            
-                            CompareDate(tempj.FromDate, tempi.ToDate, False, False)):           
-                            records[i] = records[i]._replace(ToDate = tempj.ToDate)
-                            records[j] = records[j]._replace(Oid = -1)
+                        if (CompareDate(tempj.ToDate, tempi.ToDate, False, True) and
+                                CompareDate(tempj.FromDate, tempi.ToDate, False, False)):
+                            records[i] = records[i]._replace(ToDate=tempj.ToDate)
+                            records[j] = records[j]._replace(Oid=-1)
 
     # Remove records that were merged.
     for record in records:
@@ -449,7 +505,6 @@ def AdjustForTimeslices(records, tolerances):
 
 
 def WriteToFeature(calibrationPointFC, fields, workspace, recordsToAdd):
-    
     # Set progressor label.
     arcpy.SetProgressorLabel("Saving new calibration points...")
 
@@ -460,7 +515,7 @@ def WriteToFeature(calibrationPointFC, fields, workspace, recordsToAdd):
             formatedRecord = {}
 
             # We will need to create blank records for our new records first. If we insert values
-            # directly, the Oid value will be set to -1 when it reaches the controller dataset. This 
+            # directly, the Oid value will be set to -1 when it reaches the controller dataset. This
             # is seen as an error by the controller dataset. Creating a blank record generates a Oid
             # that we will update.
             with arcpy.da.InsertCursor(calibrationPointFC, ["OID@"]) as insertCursor:
@@ -472,21 +527,25 @@ def WriteToFeature(calibrationPointFC, fields, workspace, recordsToAdd):
                         editedRouteOid.append(row.Oid)
 
                     oid = insertCursor.insertRow([None])
-                    formatedRecord[oid] = ([oid, row.RouteId, row.FromDate, row.ToDate, row.FromM, row.Network, row.Geometry])
+                    formatedRecord[oid] = (
+                    [oid, row.RouteId, row.FromDate, row.ToDate, row.FromM, row.Network, row.Geometry])
 
             # Where clause using Oids we got from above.
             valueList = formatedRecord.keys()
             whereclause = '%s IN (%s)' % ('OBJECTID', ','.join(map(str, valueList)))
 
             # Update the records with the new values.
-            with arcpy.da.UpdateCursor(calibrationPointFC, [ "OID@", fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure, fields.NetworkId, "SHAPE@"], whereclause) as updateCursor:
+            with arcpy.da.UpdateCursor(calibrationPointFC,
+                                       ["OID@", fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure,
+                                        fields.NetworkId, "SHAPE@"], whereclause) as updateCursor:
 
                 for row in updateCursor:
                     row[1] = formatedRecord[row[0]][1]
                     row[2] = formatedRecord[row[0]][2]
                     row[3] = formatedRecord[row[0]][3]
                     row[4] = formatedRecord[row[0]][4]
-                    row[5] = formatedRecord[row[0]][5]    # To test comment out this line so records can be deleted with ease.
+                    row[5] = formatedRecord[row[0]][
+                        5]  # To test comment out this line so records can be deleted with ease.
                     row[6] = formatedRecord[row[0]][6]
                     updateCursor.updateRow(row)
 
@@ -496,12 +555,11 @@ def WriteToFeature(calibrationPointFC, fields, workspace, recordsToAdd):
     return editedRouteOid
 
 
-def WriteLogFile(routeOids, cpOids):
-
+def WriteLogFile(routeOids, cpOids, nanOids):
     # Set progressor label.
     arcpy.SetProgressorLabel("Writing to output log file...")
 
-    if routeOids or cpOids:
+    if routeOids or cpOids or nanOids:
         # Create output file in scratch folder.
         outputDir = arcpy.env.scratchFolder
         outputLogName = 'UpdateCpOutput' + r".log"
@@ -510,7 +568,6 @@ def WriteLogFile(routeOids, cpOids):
         txtFile = open(outputFileLog, 'w')
 
         if routeOids:
-
             # Sort oids for legibility.
             sortedOids = sorted(routeOids)
 
@@ -520,13 +577,22 @@ def WriteLogFile(routeOids, cpOids):
             txtFile.write('\n\n\n')
 
         if cpOids:
-
             # Sort oids for legibility.
             sortedOids = sorted(cpOids)
 
             # Write to log file.
             txtFile.write('Calibration Point OID(s) that had Z values changed:\n')
             txtFile.write('%s' % ','.join(map(str, sortedOids)))
+
+        if nanOids:
+            # Sort oids for legibility.
+            sortedOids = sorted(nanOids)
+
+            # Write to log file.
+            txtFile.write('Route OID(s) that are uncalibrated: \n')
+            txtFile.write('%s' % ','.join(map(str, sortedOids)))
+            arcpy.AddWarning(
+                'Uncalibrated routes were detected in the network. All routes must be calibrated before running this tool. See log for more info.')
 
         txtFile.close()
 
@@ -539,20 +605,23 @@ def WriteLogFile(routeOids, cpOids):
 ##******************************************##
 
 
-def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibrationPointPath, calibrationFields, tolerances):
-
+def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibrationPointPath, calibrationFields,
+                                         tolerances):
     # Set progressor bar and label.
     featureCount = int(arcpy.GetCount_management(networkPath)[0])
     arcpy.SetProgressor("step", "Checking Z values on calibration points...",
-                    0, featureCount, 1)
+                        0, featureCount, 1)
 
     # Go route by route and check calibration points.
     alteredCps = {}
     routes = {}
-    for row in arcpy.da.SearchCursor(networkPath, ["OID@", networkFields.RouteId, networkFields.FromDate, networkFields.ToDate, "SHAPE@"]):
-        
+    for row in arcpy.da.SearchCursor(networkPath,
+                                     ["OID@", networkFields.RouteId, networkFields.FromDate, networkFields.ToDate,
+                                      "SHAPE@"]):
+
         # Store row in tuple for readability.
-        routeValues = RouteInfo(Oid = row[0], RouteId = row[1], FromDate = row[2], ToDate = row[3], FromM = 0, ToM = 0, Network = 0, Geometry = row[4])
+        routeValues = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=0, ToM=0, Network=0,
+                                Geometry=row[4])
 
         # Ignore geometry that is null or not calibrated.
         if routeValues.Geometry is None or math.isnan(routeValues.Geometry.firstPoint.M):
@@ -578,7 +647,6 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
 
 
 def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances):
-        
     # Get route ids for routes and set where clause.
     routeIds = routes.keys()
     valueList = ["'%s'" % value for value in routeIds]
@@ -587,10 +655,14 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
     # Search Calibration point feature class. Store in dictionary based off routeId.
     calibrationDict = {}
     duplicateCpDict = {}
-    for row in arcpy.da.SearchCursor(calibrationPointPath, [ "OID@", calibrationFields.RouteId, calibrationFields.FromDate, calibrationFields.ToDate, calibrationFields.Measure, "SHAPE@"], where_clause=whereclause):
+    for row in arcpy.da.SearchCursor(calibrationPointPath,
+                                     ["OID@", calibrationFields.RouteId, calibrationFields.FromDate,
+                                      calibrationFields.ToDate, calibrationFields.Measure, "SHAPE@"],
+                                     where_clause=whereclause):
 
         # Store row in tuple for readability.
-        cpValue = RouteInfo( Oid = row[0], RouteId = row[1], FromDate = row[2], ToDate = row[3], FromM = row[4], ToM = row[4], Network = 0, Geometry = row[5])
+        cpValue = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=row[4], ToM=row[4],
+                            Network=0, Geometry=row[5])
 
         if cpValue.RouteId not in calibrationDict:
             calibrationDict[cpValue.RouteId] = []
@@ -600,10 +672,10 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
         # Look for duplicate cps at location.
         for cp in calibrationDict[cpValue.RouteId]:
             if (cp.Oid != cpValue.Oid and
-                Intersects(cp.FromDate, cpValue.FromDate, cp.ToDate, cpValue.ToDate) and
-                math.isclose(cp.Geometry[0].X, cpValue.Geometry[0].X, abs_tol = tolerances.XYTolerance) and
-                math.isclose(cp.Geometry[0].Y, cpValue.Geometry[0].Y, abs_tol = tolerances.XYTolerance)):
-                
+                    Intersects(cp.FromDate, cpValue.FromDate, cp.ToDate, cpValue.ToDate) and
+                    math.isclose(cp.Geometry[0].X, cpValue.Geometry[0].X, abs_tol=tolerances.XYTolerance) and
+                    math.isclose(cp.Geometry[0].Y, cpValue.Geometry[0].Y, abs_tol=tolerances.XYTolerance)):
+
                 if cpValue.RouteId not in duplicateCpDict:
                     duplicateCpDict[cpValue.RouteId] = []
 
@@ -615,7 +687,7 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
 
         cpValues = calibrationDict[routeId]
         for cpValue in cpValues:
-            
+
             # Skip points with duplicate cps at location.
             duplicateLocation = False
             if cpValue.RouteId in duplicateCpDict:
@@ -628,9 +700,9 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
                 continue
 
             # Make sure there is valid geometry.
-            if (cpValue.Geometry is not None and 
-                cpValue.FromM is not None):
-        
+            if (cpValue.Geometry is not None and
+                    cpValue.FromM is not None):
+
                 # Check each time slice of the route.
                 for route in routes[cpValue.RouteId]:
 
@@ -642,9 +714,9 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
 
                         # Make sure the Calibration Point is within the time span of the route, XY values
                         # match, and Z values do NOT match.
-                        if (math.isclose(newPoint[0].X, cpValue.Geometry[0].X, abs_tol = tolerances.XYTolerance) and
-                            math.isclose(newPoint[0].Y, cpValue.Geometry[0].Y, abs_tol = tolerances.XYTolerance) and
-                            not math.isclose(newPoint[0].Z, cpValue.Geometry[0].Z, abs_tol = tolerances.ZTolerance)):
+                        if (math.isclose(newPoint[0].X, cpValue.Geometry[0].X, abs_tol=tolerances.XYTolerance) and
+                                math.isclose(newPoint[0].Y, cpValue.Geometry[0].Y, abs_tol=tolerances.XYTolerance) and
+                                not math.isclose(newPoint[0].Z, cpValue.Geometry[0].Z, abs_tol=tolerances.ZTolerance)):
 
                             # Store in a dict with the altered oid and new geometry. We cannot update here as it would
                             # result in an edit log record.
@@ -658,7 +730,7 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
 
     # Handle duplicate cps.
     for routeId in duplicateCpDict:
-            
+
         # Get list of cps at this location.
         cpValues = duplicateCpDict[routeId]
 
@@ -666,13 +738,13 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
         if len(cpValues) < 2:
             continue
 
-        # Cps are inserted as pairs. We will need to 
+        # Cps are inserted as pairs. We will need to
         # iterate each set of pairs.
         pairs = len(cpValues) / 2
 
         i = 0
         while (i <= pairs):
-        
+
             firstCp = cpValues[i]
             secondCp = cpValues[i + 1]
 
@@ -694,9 +766,9 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
                     # Find the first and second occurrences of this point.
                     for part in route.Geometry:
                         for pnt in part:
-                            if (math.isclose(pnt.X, firstCp.Geometry[0].X, abs_tol = tolerances.XYTolerance) and
-                                math.isclose(pnt.Y, firstCp.Geometry[0].Y, abs_tol = tolerances.XYTolerance)):
-                                
+                            if (math.isclose(pnt.X, firstCp.Geometry[0].X, abs_tol=tolerances.XYTolerance) and
+                                    math.isclose(pnt.Y, firstCp.Geometry[0].Y, abs_tol=tolerances.XYTolerance)):
+
                                 if not firstPointFound:
                                     firstPointFound = True
                                     firstGeometry = pnt
@@ -733,7 +805,6 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
 
 
 def UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace):
-
     # Set progressor label.
     arcpy.SetProgressorLabel("Updating calibration points...")
 
@@ -741,7 +812,7 @@ def UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace):
     oids = editedCps.keys()
     valueList = ["%s" % value for value in oids]
     whereclause = '%s IN (%s)' % ("OBJECTID", ','.join(map(str, valueList)))
-    
+
     # To prevent edit log records, we will need to do this in two steps:
     # 1. Null out the existing geometry for the point record.
     # 2. Update the geometry field with the new geometry.
@@ -768,12 +839,12 @@ def UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace):
     # return the updated oids.
     return oids
 
+
 ##******************************************##
 ##            Utility Functions             ##
 ##******************************************##
 
 def GetPoint(routeInfo, measure, tolerances):
-    
     firstVertex = routeInfo.Geometry.firstPoint
 
     # iterate geometry to find vertex before/after measure.
@@ -781,7 +852,7 @@ def GetPoint(routeInfo, measure, tolerances):
         for vertex in part:
 
             # Found vertex with the measure. Return it.
-            if math.isclose(vertex.M, measure, rel_tol = tolerances.MTolerance, abs_tol = tolerances.MTolerance):
+            if math.isclose(vertex.M, measure, rel_tol=tolerances.MTolerance, abs_tol=tolerances.MTolerance):
                 return vertex
 
             # Vertex measure is less than measure.
@@ -791,15 +862,15 @@ def GetPoint(routeInfo, measure, tolerances):
             # Vertex measure is greater than measure. Use distances
             # to find the point at the measure we want.
             if vertex.M > measure:
-
                 # Get distances.
                 firstVertexDistance = routeInfo.Geometry.queryPointAndDistance(firstVertex, False)[1]
                 secondVertexDistance = routeInfo.Geometry.queryPointAndDistance(vertex, False)[1]
-                
+
                 # Interpolate distance.
                 distanceBetween = secondVertexDistance - firstVertexDistance
-                pointDistance = (((firstVertex.M - measure) * distanceBetween) / (firstVertex.M - vertex.M)) + firstVertexDistance
-                
+                pointDistance = (((firstVertex.M - measure) * distanceBetween) / (
+                            firstVertex.M - vertex.M)) + firstVertexDistance
+
                 # Return point at distance.
                 return routeInfo.Geometry.segmentAlongLine(firstVertexDistance, pointDistance, False).lastPoint
 
@@ -808,7 +879,6 @@ def GetPoint(routeInfo, measure, tolerances):
 
 
 def CompareDate(date1, date2, lesser, greater):
-    
     # Change null dates to min/max dates
     if date1 == None:
         date1 = datetime.datetime.max
@@ -824,7 +894,6 @@ def CompareDate(date1, date2, lesser, greater):
 
 
 def Intersects(fromDate1, fromDate2, toDate1, toDate2):
-
     # Change null dates to min/max dates
     if fromDate1 == None:
         fromDate1 = datetime.datetime.min
@@ -837,11 +906,10 @@ def Intersects(fromDate1, fromDate2, toDate1, toDate2):
 
     # Returns if dates intersect.
     return ((fromDate1 <= fromDate2 and (toDate2 <= toDate1 or toDate1 == datetime.datetime.max)) or
-			(fromDate2 <= fromDate1 and (toDate1 <= toDate2 or toDate2 == datetime.datetime.max)))
+            (fromDate2 <= fromDate1 and (toDate1 <= toDate2 or toDate2 == datetime.datetime.max)))
 
 
 def GetFeatureDataset(FC):
-
     # Returns the path to the Feature Dataset.
     fcPath = arcpy.Describe(FC).catalogPath
     fcHome = os.path.dirname(fcPath)
@@ -853,7 +921,6 @@ def GetFeatureDataset(FC):
 
 
 def IsFeatureLayer(feature, parameter):
-    
     # Returns if the input feature is a layer.
     input = arcpy.Describe(feature).catalogPath
     if 'https:' in input:
@@ -863,16 +930,17 @@ def IsFeatureLayer(feature, parameter):
     return False
 
 
-def GetLrsMetadata(feature, validate = False, parameter = None):
-
+def GetLrsMetadata(feature, validate=False, parameter=None):
     # Find if feature is in LRS dataset
     lrsDatasetPath = GetFeatureDataset(feature)
     if not lrsDatasetPath:
         if validate:
-            parameter.setErrorMessage("The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
+            parameter.setErrorMessage(
+                "The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
             return None
         else:
-            arcpy.AddError("The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
+            arcpy.AddError(
+                "The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
 
     # Find LRS metadata.
     datasetName = lrsDatasetPath.split('\\')[-1]
@@ -880,24 +948,27 @@ def GetLrsMetadata(feature, validate = False, parameter = None):
         desc = arcpy.Describe(lrsDatasetPath + '\\' + datasetName)
     except Exception as e:
         if validate:
-            parameter.setErrorMessage("The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
+            parameter.setErrorMessage(
+                "The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
             return None
         else:
-            arcpy.AddError("The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
+            arcpy.AddError(
+                "The data is not in an LRS feature dataset. Move your data to a feature dataset and then run the Modify LRS tool and try again.")
 
     lrsMetadata = desc.LrsMetadata
     if not lrsMetadata:
         if validate:
-            parameter.setErrorMessage("Cannot find LRS. Verify data is in LRS feature dataset and run Modify LRS tool and try again.")
+            parameter.setErrorMessage(
+                "Cannot find LRS. Verify data is in LRS feature dataset and run Modify LRS tool and try again.")
             return None
         else:
-            arcpy.AddError("Cannot find LRS. Verify data is in LRS feature dataset and run Modify LRS tool and try again.")
+            arcpy.AddError(
+                "Cannot find LRS. Verify data is in LRS feature dataset and run Modify LRS tool and try again.")
 
     return lrsMetadata
 
 
-def GetNetworkFromMetadata(lrsMetadata, inputFeature, validate = False, parameter = None):
-
+def GetNetworkFromMetadata(lrsMetadata, inputFeature, validate=False, parameter=None):
     # if gdb, get just the network name..
     inputName = inputFeature.split('\\')[-1]
 
@@ -913,7 +984,7 @@ def GetNetworkFromMetadata(lrsMetadata, inputFeature, validate = False, paramete
     # Find input Network in LRS.
     for networks in rootNetworks:
         for network in networks:
-            name = network.attrib['Name']
+            name = network.attrib['PersistedFeatureClassName']
             if name == inputName:
                 return network
 
@@ -922,11 +993,10 @@ def GetNetworkFromMetadata(lrsMetadata, inputFeature, validate = False, paramete
     else:
         arcpy.AddError("The Network parameter is not a valid LRS Network feature.")
 
-    return None    
+    return None
 
 
-def GetCalibrationPointFromMetadata(lrsMetadata, inputFeature, validate = False, parameter = None):
-
+def GetCalibrationPointFromMetadata(lrsMetadata, inputFeature, validate=False, parameter=None):
     # if gdb, get just the Calibration Point name..
     inputName = inputFeature.split('\\')[-1]
 
@@ -954,7 +1024,6 @@ def GetCalibrationPointFromMetadata(lrsMetadata, inputFeature, validate = False,
 
 
 def GetNetworkFields(network):
-
     # Returns NamedTuple of Fields.
     routeId = network.attrib['PersistedFeatureClassRouteIdFieldName']
     fromDate = network.attrib['FromDateFieldName']
@@ -965,7 +1034,6 @@ def GetNetworkFields(network):
 
 
 def GetCalibrationPointFields(lrsMetadata):
-
     # Returns NamedTuple of Fields.
     root = ET.fromstring(lrsMetadata)
     rootFieldNames = root.findall('FieldNames')
@@ -973,24 +1041,22 @@ def GetCalibrationPointFields(lrsMetadata):
     # Find input Network in LRS.
     for fields in rootFieldNames:
         for field in fields.iter('CalibrationPoint'):
-            routeId = field.attrib['RouteId']  
-            fromDate = field.attrib['FromDate']  
-            toDate = field.attrib['ToDate']  
-            measure = field.attrib['Measure']  
-            networkid = field.attrib['NetworkId']  
+            routeId = field.attrib['RouteId']
+            fromDate = field.attrib['FromDate']
+            toDate = field.attrib['ToDate']
+            measure = field.attrib['Measure']
+            networkid = field.attrib['NetworkId']
 
     return Fields(routeId, fromDate, toDate, measure, networkid)
 
 
 def GetTolerances(feature):
-
     # Returns NamedTuple of Tolerances.
     SR = arcpy.Describe(feature).spatialReference
     return Tolerance(SR.XYTolerance * 2, SR.ZTolerance, SR.Mtolerance * 2)
 
 
 def StartEditSession(workspace):
-
     # Start edit session.
     edit = arcpy.da.Editor(workspace)
     edit.startEditing(False, False)
@@ -999,7 +1065,6 @@ def StartEditSession(workspace):
 
 
 def StopEditSession(edit):
-    
     # Stop edit session.
     edit.stopOperation()
     edit.stopEditing(True)
@@ -1035,6 +1100,6 @@ class Tolerance(NamedTuple):
     ZTolerance: float
     MTolerance: float
 
-        
+
 
 
