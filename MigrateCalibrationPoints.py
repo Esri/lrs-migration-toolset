@@ -170,42 +170,43 @@ class MigrateCalibrationPoints(object):
         # Start edit session.
         edit = StartEditSession(workspace)
 
-        nanOids = CheckForNans(networkPath, networkField)
+        nanOids = []
+        nonMonotonicOids = []
+        CheckForInvalidRoutes(networkPath, networkField, nanOids, nonMonotonicOids)
 
         editedRouteOids = []
         editedCpOids = []
 
-        if nanOids.count == 0:
-            # Get only routes that contain loops.
-            routesWithLoops = GetRoutesWithLoops(networkPath, networkField, tolerances)
+        # Get only routes that contain loops.
+        routesWithLoops = GetRoutesWithLoops(networkPath, networkField, tolerances, nanOids, nonMonotonicOids)
 
-            # If loops are present.
-            if routesWithLoops:
-                # Check if loops have existing intermediate cps.
-                intermediateCpsInLoops = GetExistingIntermediateCps(calibrationPointPath, calibrationPointFields,
-                                                                    tolerances, routesWithLoops)
+        # If loops are present.
+        if routesWithLoops:
+            # Check if loops have existing intermediate cps.
+            intermediateCpsInLoops = GetExistingIntermediateCps(calibrationPointPath, calibrationPointFields,
+                                                                tolerances, routesWithLoops, nanOids)
 
-                # Find new cps that need to be added.
-                cpRecordsToAdd = GetCpRecordsToAdd(calibrationPointPath, tolerances, routesWithLoops,
-                                                   intermediateCpsInLoops)
+            # Find new cps that need to be added.
+            cpRecordsToAdd = GetCpRecordsToAdd(calibrationPointPath, tolerances, routesWithLoops,
+                                                intermediateCpsInLoops)
 
-                # Write new records to Calibration Point Feature class.
-                editedRouteOids = WriteToFeature(calibrationPointPath, calibrationPointFields, workspace,
-                                                 cpRecordsToAdd)
+            # Write new records to Calibration Point Feature class.
+            editedRouteOids = WriteToFeature(calibrationPointPath, calibrationPointFields, workspace,
+                                                cpRecordsToAdd)
 
-            # Check for cps with incorrect Z values.
-            editedCps = GetAdjustZValuesForCalibrationPoints(networkPath, networkField, calibrationPointPath,
-                                                             calibrationPointFields, tolerances)
+        # Check for cps with incorrect Z values.
+        editedCps = GetAdjustZValuesForCalibrationPoints(networkPath, networkField, calibrationPointPath,
+                                                            calibrationPointFields, tolerances, nanOids)
 
-            # Update calibration point if needed.
-            if editedCps:
-                editedCpOids = UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace)
+        # Update calibration point if needed.
+        if editedCps:
+            editedCpOids = UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace)
 
         # Stop edit session.
         StopEditSession(edit)
 
         # Write to output log file if any new cps were added/updated.
-        WriteLogFile(editedRouteOids, editedCpOids, nanOids)
+        WriteLogFile(editedRouteOids, editedCpOids, nanOids, nonMonotonicOids)
 
         return
 
@@ -214,13 +215,12 @@ class MigrateCalibrationPoints(object):
 ##      Looped Routes Functions             ##
 ##******************************************##
 
-def CheckForNans(networkFC, fields, ):
+def CheckForInvalidRoutes(networkFC, fields, nanOids, nonMonotoicOids):
     # Set progressor bar and label.
     featureCount = int(arcpy.GetCount_management(networkFC)[0])
     arcpy.SetProgressor("step", "Validating Routes...",
                         0, featureCount, 1)
 
-    nanOids = []
     for row in arcpy.da.SearchCursor(networkFC, ["OID@", fields.RouteId, fields.FromDate, fields.ToDate, "SHAPE@"]):
 
         # Store row in tuple for readability.
@@ -232,24 +232,29 @@ def CheckForNans(networkFC, fields, ):
             arcpy.SetProgressorPosition()
             continue
 
-        nanFound = False
-        pointIndex = []
+        Invalid = False
+        currentValue = None;
         for part in rowValues.Geometry:
-            if nanFound == True:
+            if Invalid == True:
                 break
 
             for point in part:
                 if (math.isnan(point.M)):
                     nanOids.append(row[0])
-                    nanFound = True
+                    Invalid = True
                     break
+                elif (currentValue is not None and point.M < currentValue):
+                    nonMonotoicOids.append(row[0])
+                    Invalid = True;
+                    break;
+                currentValue = point.M
 
         arcpy.SetProgressorPosition()
 
     return nanOids
 
 
-def GetRoutesWithLoops(networkFC, fields, tolerances):
+def GetRoutesWithLoops(networkFC, fields, tolerances, nanOids, nonMonotonicOids):
     # Set progressor bar and label.
     featureCount = int(arcpy.GetCount_management(networkFC)[0])
     arcpy.SetProgressor("step", "Finding Routes with Loops...",
@@ -266,6 +271,13 @@ def GetRoutesWithLoops(networkFC, fields, tolerances):
         # Skip null geometry
         if rowValues.Geometry is None:
             arcpy.SetProgressorPosition()
+            continue
+
+        # Skip routes with nan values
+        if row[0] in nanOids:
+            continue
+
+        if row[0] in nonMonotonicOids:
             continue
 
         pointIndex = []
@@ -329,7 +341,7 @@ def GetRoutesWithLoops(networkFC, fields, tolerances):
     return routeInfo
 
 
-def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRoutes):
+def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRoutes, nanOids):
     # Set progressor label.
     arcpy.SetProgressorLabel("Finding existing intermediate cps...")
 
@@ -347,6 +359,13 @@ def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRou
         # Store row in tuple for readability.
         rowValues = RouteInfo(Oid=0, RouteId=row[0], FromDate=row[1], ToDate=row[2], FromM=row[3], ToM=row[3],
                               Network=0, Geometry=row[4])
+
+        # Skip calibration points with nan values.
+        if rowValues.FromM is None or math.isnan(rowValues.FromM):
+            continue
+
+        if rowValues.ToM is None or math.isnan(rowValues.ToM):
+            continue
 
         for value in loopedRoutes[rowValues.RouteId]:
             routeInfo = RouteInfo(**value)
@@ -555,11 +574,11 @@ def WriteToFeature(calibrationPointFC, fields, workspace, recordsToAdd):
     return editedRouteOid
 
 
-def WriteLogFile(routeOids, cpOids, nanOids):
+def WriteLogFile(routeOids, cpOids, nanOids, nonMonotonicOids):
     # Set progressor label.
     arcpy.SetProgressorLabel("Writing to output log file...")
 
-    if routeOids or cpOids or nanOids:
+    if routeOids or cpOids or nanOids or nonMonotonicOids:
         # Create output file in scratch folder.
         outputDir = arcpy.env.scratchFolder
         outputLogName = 'UpdateCpOutput' + r".log"
@@ -583,6 +602,7 @@ def WriteLogFile(routeOids, cpOids, nanOids):
             # Write to log file.
             txtFile.write('Calibration Point OID(s) that had Z values changed:\n')
             txtFile.write('%s' % ','.join(map(str, sortedOids)))
+            txtFile.write('\n\n\n')
 
         if nanOids:
             # Sort oids for legibility.
@@ -591,8 +611,15 @@ def WriteLogFile(routeOids, cpOids, nanOids):
             # Write to log file.
             txtFile.write('Route OID(s) that are uncalibrated: \n')
             txtFile.write('%s' % ','.join(map(str, sortedOids)))
-            arcpy.AddWarning(
-                'Uncalibrated routes were detected in the network. All routes must be calibrated before running this tool. See log for more info.')
+            txtFile.write('\n\n\n')
+
+        if nonMonotonicOids:
+            # Sort oids for legibility.
+            sortedOids = sorted(nonMonotonicOids)
+
+            # Write to log file.
+            txtFile.write('Route OID(s) that have non-monotonic measures: \n')
+            txtFile.write('%s' % ','.join(map(str, sortedOids)))
 
         txtFile.close()
 
@@ -606,7 +633,7 @@ def WriteLogFile(routeOids, cpOids, nanOids):
 
 
 def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibrationPointPath, calibrationFields,
-                                         tolerances):
+                                         tolerances, nanOids):
     # Set progressor bar and label.
     featureCount = int(arcpy.GetCount_management(networkPath)[0])
     arcpy.SetProgressor("step", "Checking Z values on calibration points...",
@@ -615,6 +642,7 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
     # Go route by route and check calibration points.
     alteredCps = {}
     routes = {}
+    routesToIgnore = []
     for row in arcpy.da.SearchCursor(networkPath,
                                      ["OID@", networkFields.RouteId, networkFields.FromDate, networkFields.ToDate,
                                       "SHAPE@"]):
@@ -624,8 +652,20 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
                                 Geometry=row[4])
 
         # Ignore geometry that is null or not calibrated.
-        if routeValues.Geometry is None or math.isnan(routeValues.Geometry.firstPoint.M):
+        if routeValues.Geometry is None or routeValues.Geometry.firstPoint.M is None or math.isnan(routeValues.Geometry.firstPoint.M):
             arcpy.SetProgressorPosition()
+            continue
+
+        # Skip routes with nan values
+        if routeValues.Oid in nanOids:
+            routesToIgnore.append(routeValues.RouteId)
+            continue
+
+        # Skip calibration points with nan values.
+        if routeValues.FromM is None or math.isnan(routeValues.FromM):
+            continue
+
+        if routeValues.ToM is None or math.isnan(routeValues.ToM):
             continue
 
         # Get and store 1000 route ids at a time.
@@ -636,17 +676,22 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
 
         # Check cps for this batch of routes.
         if len(routes) > 1000:
-            GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances)
+            GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances, routesToIgnore)
             routes.clear()
+            for x in range(0, 1000):
+                arcpy.SetProgressorPosition()
+
 
     # Check cps for any remaining routes.
     if len(routes) > 0:
-        GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances)
+        GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances, routesToIgnore)
+        for x in range(0, len(routes)):
+            arcpy.SetProgressorPosition()
 
     return alteredCps
 
 
-def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances):
+def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances, routesToIgnore):
     # Get route ids for routes and set where clause.
     routeIds = routes.keys()
     valueList = ["'%s'" % value for value in routeIds]
@@ -663,6 +708,17 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
         # Store row in tuple for readability.
         cpValue = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=row[4], ToM=row[4],
                             Network=0, Geometry=row[5])
+
+        # Skip routes with nan values
+        if cpValue.RouteId in routesToIgnore:
+            continue
+
+        # Skip calibration points with nan values.
+        if cpValue.FromM is None or math.isnan(cpValue.FromM):
+            continue
+
+        if cpValue.ToM is None or math.isnan(cpValue.ToM):
+            continue
 
         if cpValue.RouteId not in calibrationDict:
             calibrationDict[cpValue.RouteId] = []
@@ -703,6 +759,9 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
             if (cpValue.Geometry is not None and
                     cpValue.FromM is not None):
 
+                if cpValue.RouteId not in routes:
+                    continue
+
                 # Check each time slice of the route.
                 for route in routes[cpValue.RouteId]:
 
@@ -724,9 +783,6 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
                                 alteredCps[cpValue.Oid] = []
 
                             alteredCps[cpValue.Oid].append(newPoint)
-
-                # Advance progressor bar.
-                arcpy.SetProgressorPosition()
 
     # Handle duplicate cps.
     for routeId in duplicateCpDict:
@@ -797,10 +853,6 @@ def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, to
 
                         alteredCps[secondCp.Oid].append(newPoint2)
 
-            # Advance progressor bar 2x since we processed 2 cps.
-            arcpy.SetProgressorPosition()
-            arcpy.SetProgressorPosition()
-
     return
 
 
@@ -861,7 +913,7 @@ def GetPoint(routeInfo, measure, tolerances):
 
             # Vertex measure is greater than measure. Use distances
             # to find the point at the measure we want.
-            if vertex.M > measure:
+            if vertex.M > measure and firstVertex.M - vertex.M > 0:
                 # Get distances.
                 firstVertexDistance = routeInfo.Geometry.queryPointAndDistance(firstVertex, False)[1]
                 secondVertexDistance = routeInfo.Geometry.queryPointAndDistance(vertex, False)[1]
