@@ -668,17 +668,19 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
         if routeValues.ToM is None or math.isnan(routeValues.ToM):
             continue
 
-        # Get and store 1000 route ids at a time.
+        batchProcess = 500
+
+        # Run in batchs. Oracle cannot exceed 1000 records in query.
         if routeValues.RouteId not in routes:
             routes[routeValues.RouteId] = []
 
         routes[routeValues.RouteId].append(routeValues)
 
         # Check cps for this batch of routes.
-        if len(routes) > 1000:
+        if len(routes) >= batchProcess:
             GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances, routesToIgnore)
             routes.clear()
-            for x in range(0, 1000):
+            for x in range(0, batchProcess):
                 arcpy.SetProgressorPosition()
 
 
