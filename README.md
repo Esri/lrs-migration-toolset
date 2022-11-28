@@ -13,9 +13,11 @@ The LRS Migration Toolset contains two tools:
 1. Download this repository as a .zip folder, or clone it to your computer.
 2. Open a project in ArcGIS Pro.
 3. Open the Catalog pane.
-4. Right click on the Toolboxes folder, then click Add Toolbox.
+4. Right click the Toolboxes folder, then click Add Toolbox.
 5. Browse to the LRS Migration Toolset.pyt folder you downloaded.
 6. Select LRS Migration Toolset.pyt, then click OK.
+
+Note: Use the Calculate Intersecting Route Measures tool to create a related table of all the routes and measures at each intersection location.
 
 Please refer to the LRS migration whitepaper document for specific information on these tools.
 
