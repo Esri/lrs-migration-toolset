@@ -177,23 +177,6 @@ class MigrateCalibrationPoints(object):
         editedRouteOids = []
         editedCpOids = []
 
-        # Get only routes that contain loops.
-        routesWithLoops = GetRoutesWithLoops(networkPath, networkField, tolerances, nanOids, nonMonotonicOids)
-
-        # If loops are present.
-        if routesWithLoops:
-            # Check if loops have existing intermediate cps.
-            intermediateCpsInLoops = GetExistingIntermediateCps(calibrationPointPath, calibrationPointFields,
-                                                                tolerances, routesWithLoops, nanOids)
-
-            # Find new cps that need to be added.
-            cpRecordsToAdd = GetCpRecordsToAdd(calibrationPointPath, tolerances, routesWithLoops,
-                                                intermediateCpsInLoops)
-
-            # Write new records to Calibration Point Feature class.
-            editedRouteOids = WriteToFeature(calibrationPointPath, calibrationPointFields, workspace,
-                                                cpRecordsToAdd)
-
         # Check for cps with incorrect Z values.
         editedCps = GetAdjustZValuesForCalibrationPoints(networkPath, networkField, calibrationPointPath,
                                                             calibrationPointFields, tolerances, nanOids)
@@ -202,6 +185,23 @@ class MigrateCalibrationPoints(object):
         if editedCps:
             editedCpOids = UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace)
 
+        # Get only routes that contain loops.
+        routesWithLoops = GetRoutesWithLoops(networkPath, networkField, tolerances, nanOids, nonMonotonicOids)
+
+        # If loops are present.
+        if routesWithLoops:
+             # Check if loops have existing intermediate cps.
+             intermediateCpsInLoops = GetExistingIntermediateCps(calibrationPointPath, calibrationPointFields,
+                                                              tolerances, routesWithLoops, nanOids)
+
+             # Find new cps that need to be added.
+             cpRecordsToAdd = GetCpRecordsToAdd(calibrationPointPath, tolerances, routesWithLoops,
+                                                intermediateCpsInLoops)
+   
+             # Write new records to Calibration Point Feature class.
+             editedRouteOids = WriteToFeature(calibrationPointPath, calibrationPointFields, workspace,
+                                                cpRecordsToAdd)
+         
         # Stop edit session.
         StopEditSession(edit)
 
@@ -345,48 +345,55 @@ def GetExistingIntermediateCps(calibrationPointFC, fields, tolerances, loopedRou
     # Set progressor label.
     arcpy.SetProgressorLabel("Finding existing intermediate cps...")
 
-    # Get route ids and set where clause.
-    routeIds = loopedRoutes.keys()
-    valueList = ["'%s'" % value for value in routeIds]
-    whereclause = '%s IN (%s)' % (fields.RouteId, ','.join(map(str, valueList)))
+    routeIds = []
+    loopedRoutesLength = len(loopedRoutes)
+    for i, (key, value) in enumerate(loopedRoutes.items()):
+        routeIds.append(key)
 
-    # Search for calibration points for looped routes.
-    existingLoopCps = {}
-    for row in arcpy.da.SearchCursor(calibrationPointFC,
-                                     [fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure, "SHAPE@"],
-                                     where_clause=whereclause):
+        # execute in batches.
+        if len(routeIds) > 500 or i == loopedRoutesLength - 1:
+            # Get route ids and set where clause.
+            valueList = ["'%s'" % value for value in routeIds]
+            whereclause = '%s IN (%s)' % (fields.RouteId, ','.join(map(str, valueList)))
 
-        # Store row in tuple for readability.
-        rowValues = RouteInfo(Oid=0, RouteId=row[0], FromDate=row[1], ToDate=row[2], FromM=row[3], ToM=row[3],
-                              Network=0, Geometry=row[4])
+            # Search for calibration points for looped routes.
+            existingLoopCps = {}
+            for row in arcpy.da.SearchCursor(calibrationPointFC,
+                                             [fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure, "SHAPE@"],
+                                             where_clause=whereclause):
 
-        # Skip calibration points with nan values.
-        if rowValues.FromM is None or math.isnan(rowValues.FromM):
-            continue
+                # Store row in tuple for readability.
+                rowValues = RouteInfo(Oid=0, RouteId=row[0], FromDate=row[1], ToDate=row[2], FromM=row[3], ToM=row[3],
+                                      Network=0, Geometry=row[4])
 
-        if rowValues.ToM is None or math.isnan(rowValues.ToM):
-            continue
+                # Skip calibration points with nan values.
+                if rowValues.FromM is None or math.isnan(rowValues.FromM):
+                    continue
 
-        for value in loopedRoutes[rowValues.RouteId]:
-            routeInfo = RouteInfo(**value)
+                if rowValues.ToM is None or math.isnan(rowValues.ToM):
+                    continue
 
-            # Check if calibration point is within time span of route and
-            # if its measure is between the start and end of the loop.
-            if (Intersects(rowValues.FromDate, routeInfo.FromDate, rowValues.ToDate, routeInfo.ToDate) and
-                    not math.isclose(rowValues.FromM, routeInfo.FromM, rel_tol=tolerances.MTolerance,
-                                     abs_tol=tolerances.MTolerance) and
-                    not math.isclose(rowValues.FromM, routeInfo.ToM, rel_tol=tolerances.MTolerance,
-                                     abs_tol=tolerances.MTolerance) and
-                    rowValues.FromM > routeInfo.FromM and rowValues.FromM < routeInfo.ToM):
+                for value in loopedRoutes[rowValues.RouteId]:
+                    routeInfo = RouteInfo(**value)
 
-                # Found intermediate cp.
-                if routeInfo.Oid not in existingLoopCps:
-                    existingLoopCps[routeInfo.Oid] = []
+                    # Check if calibration point is within time span of route and
+                    # if its measure is between the start and end of the loop.
+                    if (Intersects(rowValues.FromDate, routeInfo.FromDate, rowValues.ToDate, routeInfo.ToDate) and
+                            not math.isclose(rowValues.FromM, routeInfo.FromM, rel_tol=tolerances.MTolerance,
+                                             abs_tol=tolerances.MTolerance) and
+                            not math.isclose(rowValues.FromM, routeInfo.ToM, rel_tol=tolerances.MTolerance,
+                                             abs_tol=tolerances.MTolerance) and
+                            rowValues.FromM > routeInfo.FromM and rowValues.FromM < routeInfo.ToM):
 
-                existingLoopCps[routeInfo.Oid].append(
-                    RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, rowValues.FromM,
-                              rowValues.FromM, routeInfo.Network, rowValues.Geometry))
+                        # Found intermediate cp.
+                        if routeInfo.Oid not in existingLoopCps:
+                            existingLoopCps[routeInfo.Oid] = []
 
+                        existingLoopCps[routeInfo.Oid].append(
+                            RouteInfo(routeInfo.Oid, routeInfo.RouteId, routeInfo.FromDate, routeInfo.ToDate, rowValues.FromM,
+                                      rowValues.FromM, routeInfo.Network, rowValues.Geometry))
+
+            routeIds.clear()
     return existingLoopCps
 
 
@@ -549,24 +556,35 @@ def WriteToFeature(calibrationPointFC, fields, workspace, recordsToAdd):
                     formatedRecord[oid] = (
                     [oid, row.RouteId, row.FromDate, row.ToDate, row.FromM, row.Network, row.Geometry])
 
-            # Where clause using Oids we got from above.
-            valueList = formatedRecord.keys()
-            whereclause = '%s IN (%s)' % ('OBJECTID', ','.join(map(str, valueList)))
 
-            # Update the records with the new values.
-            with arcpy.da.UpdateCursor(calibrationPointFC,
-                                       ["OID@", fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure,
-                                        fields.NetworkId, "SHAPE@"], whereclause) as updateCursor:
+            createdOids = []
+            recordsLength = len(formatedRecord)
+            for i, (key, value) in enumerate(formatedRecord.items()):
+                createdOids.append(key)
 
-                for row in updateCursor:
-                    row[1] = formatedRecord[row[0]][1]
-                    row[2] = formatedRecord[row[0]][2]
-                    row[3] = formatedRecord[row[0]][3]
-                    row[4] = formatedRecord[row[0]][4]
-                    row[5] = formatedRecord[row[0]][
-                        5]  # To test comment out this line so records can be deleted with ease.
-                    row[6] = formatedRecord[row[0]][6]
-                    updateCursor.updateRow(row)
+                # execute in batches.
+                if len(createdOids) > 500 or i == recordsLength - 1:
+
+                    # Where clause using Oids we got from above.
+                    valueList = ["%s" % value for value in createdOids]
+                    whereclause = '%s IN (%s)' % ('OBJECTID', ','.join(map(str, valueList)))
+
+                    # Update the records with the new values.
+                    with arcpy.da.UpdateCursor(calibrationPointFC,
+                                               ["OID@", fields.RouteId, fields.FromDate, fields.ToDate, fields.Measure,
+                                                fields.NetworkId, "SHAPE@"], whereclause) as updateCursor:
+
+                        for row in updateCursor:
+                            row[1] = formatedRecord[row[0]][1]
+                            row[2] = formatedRecord[row[0]][2]
+                            row[3] = formatedRecord[row[0]][3]
+                            row[4] = formatedRecord[row[0]][4]
+                            row[5] = formatedRecord[row[0]][
+                                5]  # To test comment out this line so records can be deleted with ease.
+                            row[6] = formatedRecord[row[0]][6]
+                            updateCursor.updateRow(row)
+
+                    createdOids.clear()
 
         except arcpy.ExecuteError:
             print(arcpy.GetMessages(2))
@@ -670,7 +688,7 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
 
         batchProcess = 500
 
-        # Run in batchs. Oracle cannot exceed 1000 records in query.
+        # Run in batches. Oracle cannot exceed 1000 records in query.
         if routeValues.RouteId not in routes:
             routes[routeValues.RouteId] = []
 
@@ -694,51 +712,61 @@ def GetAdjustZValuesForCalibrationPoints(networkPath, networkFields, calibration
 
 
 def GetPointsAtZ(calibrationPointPath, calibrationFields, routes, alteredCps, tolerances, routesToIgnore):
-    # Get route ids for routes and set where clause.
-    routeIds = routes.keys()
-    valueList = ["'%s'" % value for value in routeIds]
-    whereclause = '%s IN (%s)' % (calibrationFields.RouteId, ','.join(map(str, valueList)))
 
-    # Search Calibration point feature class. Store in dictionary based off routeId.
     calibrationDict = {}
     duplicateCpDict = {}
-    for row in arcpy.da.SearchCursor(calibrationPointPath,
-                                     ["OID@", calibrationFields.RouteId, calibrationFields.FromDate,
-                                      calibrationFields.ToDate, calibrationFields.Measure, "SHAPE@"],
-                                     where_clause=whereclause):
+    routeIds = []
+    routeIdLength = len(routes)
+    for i, (key, value) in enumerate(routes.items()):
+        routeIds.append(key)
 
-        # Store row in tuple for readability.
-        cpValue = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=row[4], ToM=row[4],
-                            Network=0, Geometry=row[5])
+        # execute in batches.
+        if len(routeIds) > 500 or i == routeIdLength - 1:
 
-        # Skip routes with nan values
-        if cpValue.RouteId in routesToIgnore:
-            continue
+            # Get route ids for routes and set where clause.
+            valueList = ["'%s'" % value for value in routeIds]
+            whereclause = '%s IN (%s)' % (calibrationFields.RouteId, ','.join(map(str, valueList)))
 
-        # Skip calibration points with nan values.
-        if cpValue.FromM is None or math.isnan(cpValue.FromM):
-            continue
+            # Search Calibration point feature class. Store in dictionary based off routeId.
 
-        if cpValue.ToM is None or math.isnan(cpValue.ToM):
-            continue
+            for row in arcpy.da.SearchCursor(calibrationPointPath,
+                                             ["OID@", calibrationFields.RouteId, calibrationFields.FromDate,
+                                              calibrationFields.ToDate, calibrationFields.Measure, "SHAPE@"],
+                                             where_clause=whereclause):
 
-        if cpValue.RouteId not in calibrationDict:
-            calibrationDict[cpValue.RouteId] = []
+                # Store row in tuple for readability.
+                cpValue = RouteInfo(Oid=row[0], RouteId=row[1], FromDate=row[2], ToDate=row[3], FromM=row[4], ToM=row[4],
+                                    Network=0, Geometry=row[5])
 
-        calibrationDict[cpValue.RouteId].append(cpValue)
+                # Skip routes with nan values
+                if cpValue.RouteId in routesToIgnore:
+                    continue
 
-        # Look for duplicate cps at location.
-        for cp in calibrationDict[cpValue.RouteId]:
-            if (cp.Oid != cpValue.Oid and
-                    Intersects(cp.FromDate, cpValue.FromDate, cp.ToDate, cpValue.ToDate) and
-                    math.isclose(cp.Geometry[0].X, cpValue.Geometry[0].X, abs_tol=tolerances.XYTolerance) and
-                    math.isclose(cp.Geometry[0].Y, cpValue.Geometry[0].Y, abs_tol=tolerances.XYTolerance)):
+                # Skip calibration points with nan values.
+                if cpValue.FromM is None or math.isnan(cpValue.FromM):
+                    continue
 
-                if cpValue.RouteId not in duplicateCpDict:
-                    duplicateCpDict[cpValue.RouteId] = []
+                if cpValue.ToM is None or math.isnan(cpValue.ToM):
+                    continue
 
-                    duplicateCpDict[cpValue.RouteId].append(cp)
-                    duplicateCpDict[cpValue.RouteId].append(cpValue)
+                if cpValue.RouteId not in calibrationDict:
+                    calibrationDict[cpValue.RouteId] = []
+
+                calibrationDict[cpValue.RouteId].append(cpValue)
+
+                # Look for duplicate cps at location.
+                for cp in calibrationDict[cpValue.RouteId]:
+                    if (cp.Oid != cpValue.Oid and
+                            Intersects(cp.FromDate, cpValue.FromDate, cp.ToDate, cpValue.ToDate) and
+                            math.isclose(cp.Geometry[0].X, cpValue.Geometry[0].X, abs_tol=tolerances.XYTolerance) and
+                            math.isclose(cp.Geometry[0].Y, cpValue.Geometry[0].Y, abs_tol=tolerances.XYTolerance)):
+
+                        if cpValue.RouteId not in duplicateCpDict:
+                            duplicateCpDict[cpValue.RouteId] = []
+
+                            duplicateCpDict[cpValue.RouteId].append(cp)
+                            duplicateCpDict[cpValue.RouteId].append(cpValue)
+            routeIds.clear()
 
     # Ignore cps with no measures.
     for routeId in calibrationDict:
@@ -862,33 +890,41 @@ def UpdateCalibrationRecords(calibrationPointPath, editedCps, workspace):
     # Set progressor label.
     arcpy.SetProgressorLabel("Updating calibration points...")
 
-    # Create where clause to get edited cps.
-    oids = editedCps.keys()
-    valueList = ["%s" % value for value in oids]
-    whereclause = '%s IN (%s)' % ("OBJECTID", ','.join(map(str, valueList)))
+    oids = []
+    editedCpsLength = len(editedCps)
+    for i, (key, value) in enumerate(editedCps.items()):
+        oids.append(key)
 
-    # To prevent edit log records, we will need to do this in two steps:
-    # 1. Null out the existing geometry for the point record.
-    # 2. Update the geometry field with the new geometry.
-    # These are done with two separate cursors to avoid confusion.
-    try:
+        # execute in batches.
+        if len(oids) > 500 or i == editedCpsLength - 1:
+            # Create where clause to get edited cps.
+            valueList = ["%s" % value for value in oids]
+            whereclause = '%s IN (%s)' % ("OBJECTID", ','.join(map(str, valueList)))
 
-        # Step 1: Null out the existing geometry for the point record.
-        with arcpy.da.UpdateCursor(calibrationPointPath, ['OID@', 'SHAPE@'], whereclause) as updateCursorRemoveGeometry:
+            # To prevent edit log records, we will need to do this in two steps:
+            # 1. Null out the existing geometry for the point record.
+            # 2. Update the geometry field with the new geometry.
+            # These are done with two separate cursors to avoid confusion.
+            try:
 
-            for row in updateCursorRemoveGeometry:
-                row[1] = None
-                updateCursorRemoveGeometry.updateRow(row)
+                # Step 1: Null out the existing geometry for the point record.
+                with arcpy.da.UpdateCursor(calibrationPointPath, ['OID@', 'SHAPE@'], whereclause) as updateCursorRemoveGeometry:
 
-        # Step 2: Update the geometry field with the new geometry.
-        with arcpy.da.UpdateCursor(calibrationPointPath, ['OID@', 'SHAPE@'], whereclause) as updateCursorAddGeometry:
+                    for row in updateCursorRemoveGeometry:
+                        row[1] = None
+                        updateCursorRemoveGeometry.updateRow(row)
 
-            for row in updateCursorAddGeometry:
-                row[1] = editedCps[row[0]][0]
-                updateCursorAddGeometry.updateRow(row)
+                # Step 2: Update the geometry field with the new geometry.
+                with arcpy.da.UpdateCursor(calibrationPointPath, ['OID@', 'SHAPE@'], whereclause) as updateCursorAddGeometry:
 
-    except arcpy.ExecuteError:
-        print(arcpy.GetMessages(2))
+                    for row in updateCursorAddGeometry:
+                        row[1] = editedCps[row[0]][0]
+                        updateCursorAddGeometry.updateRow(row)
+
+            except arcpy.ExecuteError:
+                print(arcpy.GetMessages(2))
+            oids.clear()
+
 
     # return the updated oids.
     return oids
