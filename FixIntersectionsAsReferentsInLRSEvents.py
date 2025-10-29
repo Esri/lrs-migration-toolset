@@ -22,7 +22,7 @@ import os.path
 import os
 import arcpy
 import xml.etree.ElementTree as ET
-
+import datetime
 
 class FixIntersectionsAsReferentsInLRSEvents(object):
     def __init__(self):
@@ -74,6 +74,7 @@ class FixIntersectionsAsReferentsInLRSEvents(object):
     def updateMessages(self, parameters):
         """Modify the messages created by internal validation for each tool
         parameter.  This method is called after internal validation."""
+        arcpy.SetupDebugger()
         ValidateParameters(parameters)
 
         return
@@ -81,6 +82,7 @@ class FixIntersectionsAsReferentsInLRSEvents(object):
     def execute(self, parameters, messages):
 
         # Clear from any previous runs
+        arcpy.SetupDebugger()
         eventFCDict.clear()
 
         # Populate the events dictionary based on multivalue events parameter
@@ -162,7 +164,8 @@ def ValidateIntersectionParam(intersectionParam, isNewIntersectionFC):
     # Find input intersection in LRS
     for intersection in rootIntersections:
         intName = intersection.get('Name')
-        if intName == intersectionFCName:
+        intFCName = intersection.get('FeatureClassName')
+        if intName == intersectionFCName or intFCName == intersectionFCName:
             isLRSInt = True
             intType = intersection.get('NewIntersectionsFormat')
             if isNewIntersectionFC and intType == 'false':
@@ -229,7 +232,8 @@ def ValidateParameters(parameters):
             # Find input event in LRS
             for ev in rootEvents:
                 eventName = ev.get('Name')
-                if eventName == eventFCName:
+                eventFeatureClassName = ev.get('FeatureClassName')
+                if eventName == eventFCName or eventFeatureClassName == eventFCName:
                     isLRSEvent = True
                     break
 
@@ -385,7 +389,8 @@ def FindReferentFieldsForEvent(eventFC):
     rootEvents = root.iter('EventTable')
     for ev in rootEvents:
         eventName = ev.get('Name')
-        if eventName == eventFCName:
+        eventFeatureClassName = ev.get('FeatureClassName')
+        if eventName == eventFCName or eventFeatureClassName == eventFCName:
             refFieldNames["FromRefMethod"] = ev.get('FromReferentMethodFieldName')
             refFieldNames["FromRefLocation"] = ev.get('FromReferentLocationFieldName')
             if not pointEvent:
@@ -441,66 +446,87 @@ def PerformSpatialJoinAnalysis(parameters, eventFC):
                                'RouteId "RouteId" true false false 1000 Text 0 0,First,#,{},RouteId,0,1000,{},ROUTEID,0,255;'.format(newIntersectionFC, oldIntersectionFC) +
                                'FeatureId "FeatureId" true true false 1000 Text 0 0,First,#,{},FeatureId,0,1000,{},FEATUREID,0,100;'.format(newIntersectionFC, oldIntersectionFC) +
                                'FeatureClassName "FeatureClassName" true false false 150 Text 0 0,First,#,{},FeatureClassName,0,150,{},FEATURECLASSNAME,0,150;'.format(newIntersectionFC, oldIntersectionFC) +
-                               'FromDate "FromDate" true true false 8 Date 0 0,First,#,{},FromDate,-1,-1,{},FROMDATE,-1,-1;'.format(newIntersectionFC, oldIntersectionFC) +
-                               'ToDate "ToDate" true true false 8 Date 0 0,First,#,{},ToDate,-1,-1,{},TODATE,-1,-1;'.format(newIntersectionFC, oldIntersectionFC) +
+                               'FromDate "FromDate" true true false 8 Date 0 0,First,#,{},FROMDATE,-1,-1;'.format(oldIntersectionFC) +
+                               'ToDate "ToDate" true true false 8 Date 0 0,First,#,{},TODATE,-1,-1;'.format(oldIntersectionFC) +
                                'Measure "Measure" true true false 8 Double 0 0,First,#,{},Measure,-1,-1;'.format(newIntersectionFC) +
                                'OldIntersectionId "OldIntersectionId" true true false 255 Text 0 0,First,#,{},INTERSECTIONID,-1,-1'.format(oldIntersectionFC), "INTERSECT", None, '')
     
+    # Build lookup dictionaries for fast access
+    ref_location_dict = {}
+    toref_location_dict = {}
+
+    for event in events_with_intersections:
+        if not event.ref_location_updated:
+            ref_location_dict.setdefault(event.ref_location, []).append(event)
+        if not pointEvent and not event.toref_location_updated:
+            toref_location_dict.setdefault(event.toref_location, []).append(event)
 
     # OldIntersectionId = old intersection ID
     # IntersectionId = new intersection ID
     fields = ["OldIntersectionId", "IntersectionId", "FromDate", "ToDate"]
     with arcpy.da.SearchCursor(tmp_spatial_join_output, fields) as cursor:
         for row in cursor:
+            old_id = row[0]
+            new_id = row[1]
             intersect_fromdt = row[2]
             intersect_todt = row[3]
-            for event in events_with_intersections:
-                # Only update event if intersection is within event date range
-                if intersect_fromdt <= event.from_date and (intersect_todt is None or intersect_todt > event.from_date):
-                    if row[0] == event.ref_location and not event.ref_location_updated:
-                        event.old_ref_location = row[0]
-                        event.ref_location = row[1]
-                        event.ref_location_updated = True
-                    if not pointEvent and row[0] == event.toref_location and not event.toref_location_updated:
-                        event.old_toref_location = row[0]
-                        event.toref_location = row[1]
+            event_to = event.to_date if event.to_date is not None else datetime.datetime.max
+            intersect_to = intersect_todt if intersect_todt is not None else datetime.datetime.max
+
+            # Update ref_location for point and line events
+            for event in ref_location_dict.get(old_id, []):
+                isIntersect = intersect_fromdt <= event_to and event.from_date <= intersect_to
+                if intersect_fromdt <= event_to and event.from_date <= intersect_to:
+                    event.old_ref_location = old_id
+                    event.ref_location = new_id
+                    event.ref_location_updated = True
+
+            # Update toref_location for line events
+            if not pointEvent:
+                for event in toref_location_dict.get(old_id, []):
+                    if intersect_fromdt <= event_to and event.from_date <= intersect_to:
+                        event.old_toref_location = old_id
+                        event.toref_location = new_id
                         event.toref_location_updated = True
 
     # Find refMethod field name in event fc
     refFieldNames = FindReferentFieldsForEvent(eventFC)
+
+    # Build a dictionary for fast event lookup by OBJECTID
+    event_dict = {event.id: event for event in events_with_intersections}
 
     # - Update event features with their associated new RefMethod and RefLocation
     if pointEvent:
         fields = ["OBJECTID", refFieldNames["FromRefMethod"], refFieldNames["FromRefLocation"]]
         with arcpy.da.UpdateCursor(eventFC, fields) as cursor:
             for row in cursor:
-                for event in events_with_intersections:
-                    if row[0] == event.id and event.ref_location_updated:
-                        # Update the RefMethod with new intersection fc
-                        row[1] = coded_value_new_intersection
-                        # Update the RefLocation with new intersection id
-                        row[2] = event.ref_location
-                        cursor.updateRow(row)
+                event = event_dict.get(row[0])
+                if event and event.ref_location_updated:
+                    # Update the RefMethod with new intersection fc
+                    row[1] = coded_value_new_intersection
+                    # Update the RefLocation with new intersection id
+                    row[2] = event.ref_location
+                    cursor.updateRow(row)
     else:
         fields = ["OBJECTID", refFieldNames["FromRefMethod"], refFieldNames["FromRefLocation"], 
                   refFieldNames["ToRefMethod"], refFieldNames["ToRefLocation"] ]
         with arcpy.da.UpdateCursor(eventFC, fields) as cursor:
             for row in cursor:
-                for event in events_with_intersections:
-                    if row[0] == event.id:
-                        if row[1] == coded_value_old_intersection and event.ref_location_updated:
-                            # Update the RefMethod with new intersection fc
-                            row[1] = coded_value_new_intersection
-                            # Update the RefLocation with new intersection id                     
-                            row[2] = event.ref_location
-                
-                        if row[3] == coded_value_old_intersection and event.toref_location_updated:
-                            # Update the ToRefMethod with new intersection fc
-                            row[3] = coded_value_new_intersection
-                            # Update the ToRefLocation with new intersection id
-                            row[4] = event.toref_location
+                event = event_dict.get(row[0])
+                if event:
+                    if row[1] == coded_value_old_intersection and event.ref_location_updated:
+                        # Update the RefMethod with new intersection fc
+                        row[1] = coded_value_new_intersection
+                        # Update the RefLocation with new intersection id                     
+                        row[2] = event.ref_location
 
-                        cursor.updateRow(row)
+                    if row[3] == coded_value_old_intersection and event.toref_location_updated:
+                        # Update the ToRefMethod with new intersection fc
+                        row[3] = coded_value_new_intersection
+                        # Update the ToRefLocation with new intersection id
+                        row[4] = event.toref_location
+
+                    cursor.updateRow(row)
 
     # - Remove tmp feature class
     if arcpy.Exists(tmp_spatial_join_output):
