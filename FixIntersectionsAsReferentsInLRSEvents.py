@@ -74,7 +74,6 @@ class FixIntersectionsAsReferentsInLRSEvents(object):
     def updateMessages(self, parameters):
         """Modify the messages created by internal validation for each tool
         parameter.  This method is called after internal validation."""
-        arcpy.SetupDebugger()
         ValidateParameters(parameters)
 
         return
@@ -82,7 +81,6 @@ class FixIntersectionsAsReferentsInLRSEvents(object):
     def execute(self, parameters, messages):
 
         # Clear from any previous runs
-        arcpy.SetupDebugger()
         eventFCDict.clear()
 
         # Populate the events dictionary based on multivalue events parameter
@@ -470,12 +468,11 @@ def PerformSpatialJoinAnalysis(parameters, eventFC):
             new_id = row[1]
             intersect_fromdt = row[2]
             intersect_todt = row[3]
-            event_to = event.to_date if event.to_date is not None else datetime.datetime.max
-            intersect_to = intersect_todt if intersect_todt is not None else datetime.datetime.max
 
             # Update ref_location for point and line events
             for event in ref_location_dict.get(old_id, []):
-                isIntersect = intersect_fromdt <= event_to and event.from_date <= intersect_to
+                event_to = event.to_date if event.to_date is not None else datetime.datetime.max
+                intersect_to = intersect_todt if intersect_todt is not None else datetime.datetime.max
                 if intersect_fromdt <= event_to and event.from_date <= intersect_to:
                     event.old_ref_location = old_id
                     event.ref_location = new_id
@@ -484,6 +481,8 @@ def PerformSpatialJoinAnalysis(parameters, eventFC):
             # Update toref_location for line events
             if not pointEvent:
                 for event in toref_location_dict.get(old_id, []):
+                    event_to = event.to_date if event.to_date is not None else datetime.datetime.max
+                    intersect_to = intersect_todt if intersect_todt is not None else datetime.datetime.max
                     if intersect_fromdt <= event_to and event.from_date <= intersect_to:
                         event.old_toref_location = old_id
                         event.toref_location = new_id
